@@ -1,110 +1,149 @@
 import java.io.File;
 import java.util.List;
+import java.util.Map;
 
-import jxl.*;
-import jxl.write.Label;
-import jxl.write.WritableSheet;
-import jxl.write.WritableWorkbook;
-
-
+import jxl.Workbook;
+import jxl.format.Alignment;
+import jxl.format.Colour;
+import jxl.write.*;
 
 public class ExcelExporter {
 
-    // Tax rates for Quebec
     private static final double GST_RATE = 0.05;
     private static final double QST_RATE = 0.09975;
 
-    // Helper method to calculate taxes based on base amount and tax included flag
-    private static TaxBreakdown calculateTaxes(double amount, boolean taxIncluded) {
-        double baseAmount, gstAmount, qstAmount;
+    // Create reusable styles
+    private static WritableCellFormat headerFormat;
+    private static WritableCellFormat moneyFormat;
+    private static WritableCellFormat moneyBoldFormat;
+    private static WritableCellFormat normalFormat;
 
-        if (taxIncluded) {
-            // Tax included in amount, reverse calculate base and taxes
+    static {
+        try {
+            WritableFont headerFont = new WritableFont(WritableFont.ARIAL, 11, WritableFont.BOLD);
+            headerFormat = new WritableCellFormat(headerFont);
+            headerFormat.setBackground(Colour.GRAY_25);
+            headerFormat.setAlignment(Alignment.CENTRE);
+            headerFormat.setWrap(true);
 
-            // Let total amount = amount = B + GST + QST
-            // Solve for base B:
-            // amount = B + (B*GST_RATE) + ((B + B*GST_RATE)*QST_RATE)
-            // amount = B * (1 + GST_RATE + (1 + GST_RATE)*QST_RATE)
-            double factor = 1 + GST_RATE + (1 + GST_RATE) * QST_RATE;
-            baseAmount = amount / factor;
+            NumberFormat nf = new NumberFormat("$#,##0.00");
+            moneyFormat = new WritableCellFormat(nf);
+            moneyFormat.setAlignment(Alignment.RIGHT);
 
-            gstAmount = baseAmount * GST_RATE;
-            qstAmount = (baseAmount + gstAmount) * QST_RATE;
-        } else {
-            // Tax not included, calculate taxes from base amount
-            baseAmount = amount;
-            gstAmount = baseAmount * GST_RATE;
-            qstAmount = (baseAmount + gstAmount) * QST_RATE;
+            WritableFont moneyBoldFont = new WritableFont(WritableFont.ARIAL, 10, WritableFont.BOLD);
+            moneyBoldFormat = new WritableCellFormat(moneyBoldFont, nf);
+            moneyBoldFormat.setAlignment(Alignment.RIGHT);
+
+            WritableFont normalFont = new WritableFont(WritableFont.ARIAL, 10, WritableFont.NO_BOLD);
+            normalFormat = new WritableCellFormat(normalFont);
+            normalFormat.setWrap(true);
+
+        } catch (Exception e) {
+            // fail quietly, fallback to defaults
+            e.printStackTrace();
         }
-
-        return new TaxBreakdown(baseAmount, gstAmount, qstAmount);
     }
 
-    public static void exportInvoices(List<Invoice> invoices, File file) throws Exception {
+    private static TaxBreakdown calculateTaxes(double amount, boolean taxIncluded, boolean nonTaxable) {
+        if (nonTaxable) return new TaxBreakdown(amount, 0, 0);
+        double base, gst, qst;
+        if (taxIncluded) {
+            double factor = 1 + GST_RATE + (1 + GST_RATE) * QST_RATE;
+            base = amount / factor;
+        } else {
+            base = amount;
+        }
+        gst = base * GST_RATE;
+        qst = (base + gst) * QST_RATE;
+        return new TaxBreakdown(base, gst, qst);
+    }
+
+    public static void exportReport(List<Invoice> invoices, List<Income> incomes, File file, Map<String, String> headerInfo) throws Exception {
         WritableWorkbook workbook = Workbook.createWorkbook(file);
-        WritableSheet sheet = workbook.createSheet("Invoices", 0);
 
-        // Totals for summary
-        double totalBase = 0.0;
-        double totalGst = 0.0;
-        double totalQst = 0.0;
-        double totalAmount = 0.0;
+        // --- Summary Sheet ---
+        WritableSheet summary = workbook.createSheet("Summary", 0);
+        int row = 0;
 
-        // Calculate totals
-        for (Invoice inv : invoices) {
-            TaxBreakdown tb = calculateTaxes(inv.getAmount(), inv.isTaxIncluded());
-            totalBase += tb.base;
-            totalGst += tb.gst;
-            totalQst += tb.qst;
-            totalAmount += tb.base + tb.gst + tb.qst;
+        Label title = new Label(0, row++, "Quarterly Financial Report Summary", headerFormat);
+        summary.addCell(title);
+        summary.mergeCells(0, 0, 3, 0);
+
+        for (Map.Entry<String, String> entry : headerInfo.entrySet()) {
+            summary.addCell(new Label(0, row, entry.getKey(), headerFormat));
+            summary.addCell(new Label(1, row++, entry.getValue(), normalFormat));
         }
 
-        // Write totals summary at top (row 0,1,2,3)
-        sheet.addCell(new Label(0, 0, "TOTAL BASE AMOUNT"));
-        sheet.addCell(new jxl.write.Number(1, 0, totalBase));
+        row++;
+        Label invoiceTitle = new Label(0, row++, "INVOICE TOTALS", headerFormat);
+        summary.addCell(invoiceTitle);
 
-        sheet.addCell(new Label(0, 1, "TOTAL GST (5%)"));
-        sheet.addCell(new jxl.write.Number(1, 1, totalGst));
+        TaxAccumulator invoiceTotals = new TaxAccumulator();
+        for (Invoice i : invoices) invoiceTotals.add(calculateTaxes(i.getAmount(), i.isTaxIncluded(), i.isNonTaxable()), i.isNonTaxable());
+        invoiceTotals.writeToSheet(summary, row, "Invoice");
 
-        sheet.addCell(new Label(0, 2, "TOTAL QST (9.975%)"));
-        sheet.addCell(new jxl.write.Number(1, 2, totalQst));
+        row += 6;
+        Label incomeTitle = new Label(0, row++, "INCOME TOTALS", headerFormat);
+        summary.addCell(incomeTitle);
 
-        sheet.addCell(new Label(0, 3, "TOTAL AMOUNT"));
-        sheet.addCell(new jxl.write.Number(1, 3, totalAmount));
+        TaxAccumulator incomeTotals = new TaxAccumulator();
+        for (Income i : incomes) incomeTotals.add(calculateTaxes(i.getAmount(), i.isTaxIncluded(), i.isNonTaxable()), i.isNonTaxable());
+        incomeTotals.writeToSheet(summary, row, "Income");
 
-        // Headers start at row 5
-        int startRow = 5;
-        sheet.addCell(new Label(0, startRow, "Vendor"));
-        sheet.addCell(new Label(1, startRow, "Category"));
-        sheet.addCell(new Label(2, startRow, "Issued Date"));
-        sheet.addCell(new Label(3, startRow, "Description"));
-        sheet.addCell(new Label(4, startRow, "Base Amount"));
-        sheet.addCell(new Label(5, startRow, "GST (5%)"));
-        sheet.addCell(new Label(6, startRow, "QST (9.975%)"));
-        sheet.addCell(new Label(7, startRow, "Total Amount"));
-        sheet.addCell(new Label(8, startRow, "Tax Included"));
+        // --- Invoices Sheet ---
+        WritableSheet invoiceSheet = workbook.createSheet("Invoices", 1);
+        writeSheet(invoiceSheet, invoices);
 
-        int row = startRow + 1;
-        for (Invoice inv : invoices) {
-            TaxBreakdown tb = calculateTaxes(inv.getAmount(), inv.isTaxIncluded());
-
-            sheet.addCell(new Label(0, row, inv.getVendor()));
-            sheet.addCell(new Label(1, row, inv.getCategory()));
-            sheet.addCell(new Label(2, row, new java.text.SimpleDateFormat("yyyy-MM-dd").format(new java.util.Date(inv.getIssuedDate()))));
-            sheet.addCell(new Label(3, row, inv.getDescription()));
-            sheet.addCell(new jxl.write.Number(4, row, tb.base));
-            sheet.addCell(new jxl.write.Number(5, row, tb.gst));
-            sheet.addCell(new jxl.write.Number(6, row, tb.qst));
-            sheet.addCell(new jxl.write.Number(7, row, tb.base + tb.gst + tb.qst));
-            sheet.addCell(new Label(8, row, inv.isTaxIncluded() ? "Yes" : "No"));
-            row++;
-        }
+        // --- Incomes Sheet ---
+        WritableSheet incomeSheet = workbook.createSheet("Incomes", 2);
+        writeSheet(incomeSheet, incomes);
 
         workbook.write();
         workbook.close();
     }
 
-    // Helper class to store tax breakdown
+    private static void writeSheet(WritableSheet sheet, List<? extends FinancialEntry> list) throws Exception {
+        // Set headers with formatting
+        String[] headers = {"Vendor", "Category", "Issued Date", "Description", "Base Amount", "GST (5%)", "QST (9.975%)", "Total Amount", "Tax Included", "Non-Taxable"};
+
+        for (int i = 0; i < headers.length; i++) {
+            sheet.addCell(new Label(i, 0, headers[i], headerFormat));
+        }
+
+        java.text.SimpleDateFormat fmt = new java.text.SimpleDateFormat("yyyy-MM-dd");
+
+        for (int row = 0; row < list.size(); row++) {
+            FinancialEntry item = list.get(row);
+            TaxBreakdown tb = calculateTaxes(item.getAmount(), item.isTaxIncluded(), item.isNonTaxable());
+            int excelRow = row + 1;
+
+            sheet.addCell(new Label(0, excelRow, item.getVendor(), normalFormat));
+            sheet.addCell(new Label(1, excelRow, item.getCategory(), normalFormat));
+            sheet.addCell(new Label(2, excelRow, fmt.format(new java.util.Date(item.getIssuedDate())), normalFormat));
+            sheet.addCell(new Label(3, excelRow, item.getDescription(), normalFormat));
+
+            sheet.addCell(new jxl.write.Number(4, excelRow, tb.base, moneyFormat));
+            sheet.addCell(new jxl.write.Number(5, excelRow, tb.gst, moneyFormat));
+            sheet.addCell(new jxl.write.Number(6, excelRow, tb.qst, moneyFormat));
+            sheet.addCell(new jxl.write.Number(7, excelRow, tb.base + tb.gst + tb.qst, moneyFormat));
+
+            sheet.addCell(new Label(8, excelRow, item.isTaxIncluded() ? "Yes" : "No", normalFormat));
+            sheet.addCell(new Label(9, excelRow, item.isNonTaxable() ? "Yes" : "No", normalFormat));
+        }
+
+        // Set some reasonable column widths (chars)
+        sheet.setColumnView(0, 15); // Vendor
+        sheet.setColumnView(1, 15); // Category
+        sheet.setColumnView(2, 12); // Date
+        sheet.setColumnView(3, 30); // Description
+        sheet.setColumnView(4, 12); // Base Amount
+        sheet.setColumnView(5, 12); // GST
+        sheet.setColumnView(6, 12); // QST
+        sheet.setColumnView(7, 14); // Total
+        sheet.setColumnView(8, 12); // Tax Included
+        sheet.setColumnView(9, 12); // Non-Taxable
+    }
+
     private static class TaxBreakdown {
         double base, gst, qst;
         TaxBreakdown(double base, double gst, double qst) {
@@ -112,5 +151,40 @@ public class ExcelExporter {
             this.gst = gst;
             this.qst = qst;
         }
+    }
+
+    private static class TaxAccumulator {
+        double base = 0, gst = 0, qst = 0, total = 0, nonTaxable = 0;
+
+        void add(TaxBreakdown t, boolean isNonTaxable) {
+            base += t.base;
+            gst += t.gst;
+            qst += t.qst;
+            total += t.base + t.gst + t.qst;
+            if (isNonTaxable) nonTaxable += t.base;
+        }
+
+        void writeToSheet(WritableSheet sheet, int startRow, String label) throws Exception {
+            sheet.addCell(new Label(0, startRow++, label + " Base Total", headerFormat));
+            sheet.addCell(new jxl.write.Number(1, startRow - 1, base, moneyBoldFormat));
+            sheet.addCell(new Label(0, startRow++, label + " GST Total", headerFormat));
+            sheet.addCell(new jxl.write.Number(1, startRow - 1, gst, moneyBoldFormat));
+            sheet.addCell(new Label(0, startRow++, label + " QST Total", headerFormat));
+            sheet.addCell(new jxl.write.Number(1, startRow - 1, qst, moneyBoldFormat));
+            sheet.addCell(new Label(0, startRow++, label + " Grand Total", headerFormat));
+            sheet.addCell(new jxl.write.Number(1, startRow - 1, total, moneyBoldFormat));
+            sheet.addCell(new Label(0, startRow++, label + " Non-Taxable Total", headerFormat));
+            sheet.addCell(new jxl.write.Number(1, startRow - 1, nonTaxable, moneyBoldFormat));
+        }
+    }
+
+    public interface FinancialEntry {
+        String getVendor();
+        String getCategory();
+        long getIssuedDate();
+        String getDescription();
+        double getAmount();
+        boolean isTaxIncluded();
+        boolean isNonTaxable();
     }
 }

@@ -1,8 +1,4 @@
-// Invoice model class for the invoice management system
-// C:\countBeans\beans\Invoice.java
-
-
-public class Invoice {
+public class Invoice implements ExcelExporter.FinancialEntry {
     private int id;
     private String vendor;
     private String category;
@@ -10,10 +6,11 @@ public class Invoice {
     private String description;
     private double amount;
     private boolean taxIncluded;
+    private boolean nonTaxable;
 
     // Constructor
     public Invoice(int id, String vendor, String category, long issuedDate,
-                   String description, double amount, boolean taxIncluded) {
+                   String description, double amount, boolean taxIncluded, boolean nonTaxable) {
         this.id = id;
         this.vendor = vendor;
         this.category = category;
@@ -21,6 +18,7 @@ public class Invoice {
         this.description = description;
         this.amount = amount;
         this.taxIncluded = taxIncluded;
+        this.nonTaxable = nonTaxable;
     }
 
     // Getters and Setters
@@ -44,4 +42,7 @@ public class Invoice {
 
     public boolean isTaxIncluded() { return taxIncluded; }
     public void setTaxIncluded(boolean taxIncluded) { this.taxIncluded = taxIncluded; }
+
+    public boolean isNonTaxable() { return nonTaxable; }
+    public void setNonTaxable(boolean nonTaxable) { this.nonTaxable = nonTaxable; }
 }
